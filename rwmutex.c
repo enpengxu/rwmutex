@@ -9,10 +9,15 @@
 	(head)->prev = (head)
 
 #define LIST_INSERT(prv, cur)			\
-	(prv)->next->prev = (cur);		\
 	(cur)->next = (prv)->next;		\
-	(prv)->next = (cur);			\
-	(cur)->prev = (prv)
+	(cur)->prev = (prv);			\
+	(prv)->next->prev = (cur);		\
+	(prv)->next = (cur)
+
+#define LIST_APPEND(head, cur)			\
+	(cur)->prev = (head)->prev;		\
+	(cur)->next = (head);			\
+	(head)->prev = (cur);			\
 
 #define LIST_REMOVE(cur)			\
 	(cur)->prev->next = (cur)->next;	\
@@ -85,7 +90,16 @@ rwmutex_rlock(struct rwmutex * rw)
 		reader->num = 0;
 		reader->type = 0;
 		reader->range[0] = reader->range[1] = rw->time;
-		LIST_INSERT(rw->head.prev, reader);
+		//LIST_INSERT(rw->head.prev, reader);
+		{
+			struct rwitem * cur = reader;
+			struct rwitem * prv = rw->head.prev;
+			(cur)->next = (prv)->next;
+			(cur)->prev = (prv);
+			(prv)->next->prev = (cur);
+			(prv)->next = (cur);
+		}
+
 	}
 
 	reader->num ++;
@@ -178,7 +192,7 @@ rwmutex_unlock(struct rwmutex * rw)
 }
 
 
-#define NUM_READER   12
+#define NUM_READER   1
 #define NUM_WRITER   1
 
 static unsigned val = 10000;
