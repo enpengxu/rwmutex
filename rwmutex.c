@@ -25,15 +25,18 @@
 	(cur)->next->prev = (cur)->prev
 
 
-#define rwlog(...)  printf("[ %x ]", (int)pthread_self());	\
+#ifdef RW_DEBUG
+  #define rwlog(...)  printf("[ %x ]", (int)pthread_self());	\
 	printf(__VA_ARGS__)
-
+#else
+  #define rwlog(...)  
+#endif
 
 struct rwitem {
-	unsigned type; // 0 : reader, 1: writer
-	unsigned ref;
-	unsigned num;
-	unsigned range[2];
+	int type; // 0 : reader, 1: writer
+	int ref;
+	int num;
+	int range[2];
 
 	// debug
 	pthread_t owner;
@@ -48,7 +51,7 @@ struct cond_mutex {
 };
 struct rwmutex {
 	struct rwitem head;
-	unsigned time;
+	int time;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 };
@@ -63,7 +66,7 @@ rwitem_alloc(struct rwmutex * rw, int type)
 	}
 	item->type = type;
 	item->num = 0;
-	item-->ref = 0;
+	item->ref = 0;
 	item->owner = pthread_self();
 	item->range[0] = rw->time;
 	item->range[1] = rw->time;
@@ -79,7 +82,7 @@ rwitem_free(struct rwitem * item)
 static void
 rwitem_dump(struct rwitem * item)
 {
-	rwlog("rwitem: %p { .owner= %x , .prev = %p, .next=%p, .type=%d, .ref=%d, .num=%d\n",
+	rwlog("\trwitem: %p { .owner= %x , .prev = %p, .next=%p, .type=%d, .ref=%d, .num=%d\n",
 	      item, (int)item->owner, item->prev, item->next, item->type, item->ref, item->num);
 }
 
@@ -90,6 +93,7 @@ rwmutex_dump(struct rwmutex* rw)
 	rwlog("\trwmutex: %p {\n", rw);
 	while(item != &rw->head) {
 		rwitem_dump(item);
+		item = item->next;
 	}
 	rwlog("\t}\n");
 }
@@ -120,15 +124,14 @@ rwmutex_rlock(struct rwmutex * rw)
 	int rc;
 	rc = pthread_mutex_lock(&rw->mutex);
 	assert(rc == 0);
-	// put into
+
 	struct rwitem * reader, * tail;
 	tail = rw->head.prev;
 
 	rwlog("rlock enter:\n");
 
 	if (tail != &rw->head && tail->type == 0) {
-		// merge into a reader block
-		tail->range[1] = rw->time;
+		// merge into the reader block
 		reader = tail;
 
 		rwlog("\t rlock merge into tail %p : ", tail);
@@ -138,9 +141,7 @@ rwmutex_rlock(struct rwmutex * rw)
 		// create a new reader block & insert to tail
 		reader = rwitem_alloc(rw, 0);
 		assert(reader);
-		//LIST_INSERT(rw->head.prev, reader);
 		LIST_APPEND(&rw->head, reader);
-
 		rwlog("\t rlock insert reader: %p\n", reader);
 	}
 
@@ -148,30 +149,12 @@ rwmutex_rlock(struct rwmutex * rw)
 	reader->ref ++;
 	rw->time ++;
 
-	if (reader->prev != &rw->head) {
-		// there are some writer/readers ahead, reader has to wait
-		struct rwitem * writer = reader->prev;
-		assert(writer->type == 1);
-		writer->ref ++;
-
-		rwlog("\t rlock : waiting writer %p ", writer);
-		rwitem_dump(writer);
-
-		while(writer->num) {
-			pthread_cond_wait(&rw->cond, &rw->mutex);
-		}
-
-		rwlog("\t rlock : finish waiting writer %p ", writer);
-		rwitem_dump(writer);
-
-		// remove writer
-		if (!--writer->ref) {
-			rwlog("\t rlock : removing writer %p\n", writer);
-			LIST_REMOVE(writer);
-			rwitem_free(writer);
-		}
+	while(reader->prev != &rw->head) {
+		pthread_cond_wait(&rw->cond, &rw->mutex);
 	}
 
+	assert((reader == rw->head.next) && (reader->prev == &rw->head));
+	
 	rwlog("rlock leav\n");
 
 	rc = pthread_mutex_unlock(&rw->mutex);
@@ -190,52 +173,23 @@ rwmutex_wlock(struct rwmutex * rw)
 
 	rwlog("wlock enter:\n");
 
-	struct rwitem * writer, * tail;
+	struct rwitem * writer, * prev;
 
-	tail = rw->head.prev;
-	if (tail != &rw->head && tail->type == 1) {
-		// merge into a writer block
-		rwlog("\t wlock merge into tail: %p\n", tail);
-		rwitem_dump(tail);
+	// create a new writer block & insert to tail
+	writer = rwitem_alloc(rw, 1);
+	assert(writer);
+	LIST_APPEND(&rw->head, writer);
 
-		tail->range[1] = rw->time;
-		writer = tail;
-	} else {
-		// create a new writer block & insert to tail
-		writer = rwitem_alloc(rw, 1);
-		assert(writer);
-		//LIST_INSERT(rw->head.prev, writer);
-		LIST_APPEND(&rw->head, writer);
-
-		rwlog("\t wlock insert writer: %p\n", writer);
-	}
+	rwlog("\t wlock insert writer: %p\n", writer);
 
 	writer->num ++;
 	writer->ref ++;
 	rw->time ++;
 
-	struct rwitem * reader = writer->prev;
-	if (reader != &rw->head) {
-		// there are some readers ahead, writer has to wait
-		assert(reader->type == 0);
-		reader->ref ++;
-
-		rwlog("\t wlock : waiting reader %p\n", reader);
-		rwitem_dump(reader);
-
-		while(reader->num) {
-			pthread_cond_wait(&rw->cond, &rw->mutex);
-		}
-		rwlog("\t wlock : finish waiting reader %p\n", reader);
-		rwitem_dump(reader);
-
-		// remove prev,
-		if (!--reader->ref) {
-			rwlog("\t wlock : removing reader %p\n", reader);
-			LIST_REMOVE(reader);
-			rwitem_free(reader);
-		}
+	while(writer->prev != &rw->head) {
+		pthread_cond_wait(&rw->cond, &rw->mutex);
 	}
+
 	rwlog("wlock leav\n");
 
 	rc = pthread_mutex_unlock(&rw->mutex);
@@ -263,20 +217,24 @@ rwmutex_unlock(struct rwmutex * rw)
 		rwlog("\t unlock: item : %p \n", item);
 		rwitem_dump(item);
 
+		assert(item->prev == &rw->head);
+		assert(rw->head.next == item);
+
+		assert(item->num > 0 && item->ref > 0);
+
 		item->ref --;
-		if (!--item->num) {
+		item->num --;
+
+		if (!item->num) {
 			if (item->next != &rw->head) {
-				rwlog("\t unlock: wakeup waiters \n");
-				assert(item->ref);
+				rwlog("\t unlock: wakeup next: %p \n", item->next);
+				rwitem_dump(item->next);
+				
 				// wakeup next item
 				pthread_cond_broadcast(&rw->cond);
-			} else {
-				assert(item->ref==0);
-				// nothing left, free itself
-				LIST_REMOVE(item);
-				rwitem_free(item);
-				rwlog("\t unlock: remove item: %p \n", item);
 			}
+			LIST_REMOVE(item);
+			rwitem_free(item);
 		}
 	}
 	rwlog("unlock leave\n");
@@ -285,10 +243,11 @@ rwmutex_unlock(struct rwmutex * rw)
 }
 
 
-#define NUM_READER   2
-#define NUM_WRITER   1
+#define NUM_READER   30
+#define NUM_WRITER   5
 
-static unsigned val = 400;
+#define val_orig 400000
+static unsigned val = val_orig;
 static struct rwmutex rw;
 static pthread_t treaders[NUM_READER];
 static pthread_t twriters[NUM_WRITER];
@@ -309,7 +268,7 @@ thread_reader(void *arg)
 
 		reader_info[idx] ++;
 
-		usleep(1);
+		//usleep(1);
 
 		if (val == 0) {
 			abort = 1;
@@ -324,21 +283,26 @@ thread_reader(void *arg)
 static void *
 thread_writer(void *arg)
 {
+	static int count = 0;
 	int abort = 0;
 	int idx = (int)arg;
-
+	
 	while(!abort) {
 		int rc = rwmutex_wlock(&rw);
 		assert(rc == 0);
 
 		writer_info[idx] ++;
 
-		usleep(1);
+		//usleep(1);
 
 		if (!val)
 			abort = 1;
 		else {
 			val --;
+		}
+		if (++count == 20) {
+			fprintf(stderr, "val = %d / %d \n", val, val_orig);
+			count = 0;
 		}
 
 		rc = rwmutex_unlock(&rw);
