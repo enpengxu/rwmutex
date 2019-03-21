@@ -17,7 +17,8 @@
 #define LIST_APPEND(head, cur)			\
 	(cur)->prev = (head)->prev;		\
 	(cur)->next = (head);			\
-	(head)->prev = (cur);			\
+	(head)->prev->next = (cur);			\
+	(head)->prev = (cur)
 
 #define LIST_REMOVE(cur)			\
 	(cur)->prev->next = (cur)->next;	\
@@ -91,7 +92,8 @@ rwmutex_rlock(struct rwmutex * rw)
 		reader->type = 0;
 		reader->range[0] = reader->range[1] = rw->time;
 		//LIST_INSERT(rw->head.prev, reader);
-		{
+		LIST_APPEND(&rw->head, reader);
+		if (0) {
 			struct rwitem * cur = reader;
 			struct rwitem * prv = rw->head.prev;
 			(cur)->next = (prv)->next;
@@ -108,6 +110,7 @@ rwmutex_rlock(struct rwmutex * rw)
 	if (reader->prev != &rw->head) {
 		// there are some writer/readers ahead, reader has to wait
 		struct rwitem * writer = reader->prev;
+		assert(writer->type == 1);
 		while(writer->num) {
 			pthread_cond_wait(&rw->cond, &rw->mutex);
 		}
@@ -141,7 +144,8 @@ rwmutex_wlock(struct rwmutex * rw)
 		writer->num = 0;
 		writer->type = 1;
 		writer->range[0] = writer->range[1] = rw->time;
-		LIST_INSERT(rw->head.prev, writer);
+		//LIST_INSERT(rw->head.prev, writer);
+		LIST_APPEND(&rw->head, writer);
 	}
 
 	writer->num ++;
@@ -150,6 +154,7 @@ rwmutex_wlock(struct rwmutex * rw)
 	if (writer->prev != &rw->head) {
 		// there are some readers ahead, writer has to wait
 		struct rwitem * reader = writer->prev;
+		assert(reader->type == 0);
 		while(reader->num) {
 			pthread_cond_wait(&rw->cond, &rw->mutex);
 		}
@@ -192,7 +197,7 @@ rwmutex_unlock(struct rwmutex * rw)
 }
 
 
-#define NUM_READER   1
+#define NUM_READER   2
 #define NUM_WRITER   1
 
 static unsigned val = 10000;
