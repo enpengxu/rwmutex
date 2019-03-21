@@ -224,6 +224,21 @@ rwmutex_unlock(struct rwmutex * rw)
 }
 
 // test codes
+
+//#define RW_LOCK  1
+
+#ifdef RW_LOCK
+#define RW_RLOCK(rw)   rwmutex_rlock(rw)
+#define RW_WLOCK(rw)   rwmutex_wlock(rw)
+#define RW_UNLOCK(rw)  rwmutex_unlock(rw)
+#else
+#define RW_RLOCK(rw)   pthread_mutex_lock(&(rw)->mutex)
+#define RW_WLOCK(rw)   pthread_mutex_lock(&(rw)->mutex)
+#define RW_UNLOCK(rw)  pthread_mutex_unlock(&(rw)->mutex);
+#endif
+	
+
+
 #define NUM_READER   50
 #define NUM_WRITER   25
 
@@ -244,17 +259,17 @@ thread_reader(void *arg)
 	int idx = (int)(uintptr_t)arg;
 
 	while(!abort) {
-		int rc = rwmutex_rlock(&rw);
+		int rc = RW_RLOCK(&rw);
 		assert(rc == 0);
 
 		reader_info[idx] ++;
 
-		usleep(random()%10);
+		//usleep(random()%10);
 
 		if (val == 0) {
 			abort = 1;
 		}
-		rc = rwmutex_unlock(&rw);
+		rc = RW_UNLOCK(&rw);
 		assert(rc == 0);
 	}
 
@@ -269,12 +284,12 @@ thread_writer(void *arg)
 	int idx = (int)(uintptr_t)arg;
 	
 	while(!abort) {
-		int rc = rwmutex_wlock(&rw);
+		int rc = RW_WLOCK(&rw);
 		assert(rc == 0);
 
 		writer_info[idx] ++;
 
-		usleep(random()%10);
+		//usleep(random()%10);
 
 		if (!val)
 			abort = 1;
@@ -282,11 +297,11 @@ thread_writer(void *arg)
 			val --;
 		}
 		if (++count == 20) {
-			fprintf(stderr, "val = %d / %d \n", val, val_orig);
+			//fprintf(stderr, "val = %d / %d \n", val, val_orig);
 			count = 0;
 		}
 
-		rc = rwmutex_unlock(&rw);
+		rc = RW_UNLOCK(&rw);
 		assert(rc == 0);
 	}
 
