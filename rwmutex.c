@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <unistd.h>
+#include <stdint.h>
 
 #define LIST_INIT(head)				\
 	(head)->next = (head);			\
@@ -34,24 +35,15 @@
 
 struct rwitem {
 	int type; // 0 : reader, 1: writer
-	int ref;
 	int num;
-	int range[2];
-
-	// debug
-	pthread_t owner;
 
 	struct rwitem * prev;
 	struct rwitem * next;
 };
 
-struct cond_mutex {
-	pthread_mutex_t mutex;
-	pthread_cond_t cond;
-};
 struct rwmutex {
-	struct rwitem head;
 	int time;
+	struct rwitem head;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 };
@@ -66,10 +58,6 @@ rwitem_alloc(struct rwmutex * rw, int type)
 	}
 	item->type = type;
 	item->num = 0;
-	item->ref = 0;
-	item->owner = pthread_self();
-	item->range[0] = rw->time;
-	item->range[1] = rw->time;
 	return item;
 }
 
@@ -82,8 +70,8 @@ rwitem_free(struct rwitem * item)
 static void
 rwitem_dump(struct rwitem * item)
 {
-	rwlog("\trwitem: %p { .owner= %x , .prev = %p, .next=%p, .type=%d, .ref=%d, .num=%d\n",
-	      item, (int)item->owner, item->prev, item->next, item->type, item->ref, item->num);
+	rwlog("\trwitem: %p {.prev = %p, .next=%p, .type=%d, .num=%d }\n",
+	      item, item->prev, item->next, item->type, item->num);
 }
 
 static void
@@ -146,7 +134,6 @@ rwmutex_rlock(struct rwmutex * rw)
 	}
 
 	reader->num ++;
-	reader->ref ++;
 	rw->time ++;
 
 	while(reader->prev != &rw->head) {
@@ -183,7 +170,6 @@ rwmutex_wlock(struct rwmutex * rw)
 	rwlog("\t wlock insert writer: %p\n", writer);
 
 	writer->num ++;
-	writer->ref ++;
 	rw->time ++;
 
 	while(writer->prev != &rw->head) {
@@ -219,17 +205,12 @@ rwmutex_unlock(struct rwmutex * rw)
 
 		assert(item->prev == &rw->head);
 		assert(rw->head.next == item);
+		assert(item->num > 0);
 
-		assert(item->num > 0 && item->ref > 0);
-
-		item->ref --;
-		item->num --;
-
-		if (!item->num) {
+		if (!--item->num) {
 			if (item->next != &rw->head) {
 				rwlog("\t unlock: wakeup next: %p \n", item->next);
 				rwitem_dump(item->next);
-				
 				// wakeup next item
 				pthread_cond_broadcast(&rw->cond);
 			}
@@ -242,9 +223,9 @@ rwmutex_unlock(struct rwmutex * rw)
 	return rc;
 }
 
-
-#define NUM_READER   30
-#define NUM_WRITER   5
+// test codes
+#define NUM_READER   50
+#define NUM_WRITER   25
 
 #define val_orig 400000
 static unsigned val = val_orig;
@@ -260,7 +241,7 @@ static void *
 thread_reader(void *arg)
 {
 	int abort = 0;
-	int idx = (int)arg;
+	int idx = (int)(uintptr_t)arg;
 
 	while(!abort) {
 		int rc = rwmutex_rlock(&rw);
@@ -268,7 +249,7 @@ thread_reader(void *arg)
 
 		reader_info[idx] ++;
 
-		//usleep(1);
+		usleep(random()%10);
 
 		if (val == 0) {
 			abort = 1;
@@ -285,7 +266,7 @@ thread_writer(void *arg)
 {
 	static int count = 0;
 	int abort = 0;
-	int idx = (int)arg;
+	int idx = (int)(uintptr_t)arg;
 	
 	while(!abort) {
 		int rc = rwmutex_wlock(&rw);
@@ -293,7 +274,7 @@ thread_writer(void *arg)
 
 		writer_info[idx] ++;
 
-		//usleep(1);
+		usleep(random()%10);
 
 		if (!val)
 			abort = 1;
@@ -318,12 +299,12 @@ main(void) {
 	assert(rc == 0);
 
 	for(i =0; i< NUM_READER; i++) {
-		rc = pthread_create(&treaders[i], NULL, thread_reader, (void *)i);
+		rc = pthread_create(&treaders[i], NULL, thread_reader, (void *)(uintptr_t)i);
 		assert(rc == 0);
 	}
 
 	for(i =0; i< NUM_WRITER; i++) {
-		rc = pthread_create(&twriters[i], NULL, thread_writer, (void *)i);
+		rc = pthread_create(&twriters[i], NULL, thread_writer, (void *)(uintptr_t)i);
 		assert(rc == 0);
 	}
 
