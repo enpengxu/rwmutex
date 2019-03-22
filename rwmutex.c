@@ -224,27 +224,40 @@ rwmutex_unlock(struct rwmutex * rw)
 }
 
 // test codes
+// 0 : regular mutex
+// 1 : pthread_rwlock
+// 2 : rwmutex
 
-//#define RW_LOCK  1
+#define RW_LOCK  2
 
-#ifdef RW_LOCK
-#define RW_RLOCK(rw)   rwmutex_rlock(rw)
-#define RW_WLOCK(rw)   rwmutex_wlock(rw)
-#define RW_UNLOCK(rw)  rwmutex_unlock(rw)
+#if RW_LOCK == 0
+  static struct rwmutex rw;
+  #define RW_INIT(rw)    rwmutex_init(rw)
+  #define RW_RLOCK(rw)   pthread_mutex_lock(&(rw)->mutex)
+  #define RW_WLOCK(rw)   pthread_mutex_lock(&(rw)->mutex)
+  #define RW_UNLOCK(rw)  pthread_mutex_unlock(&(rw)->mutex);
+#elif RW_LOCK == 1
+  static pthread_rwlock_t rw;
+#define RW_INIT(rw)    pthread_rwlock_init(rw, NULL)
+  #define RW_RLOCK(rw)   pthread_rwlock_rdlock(rw)
+  #define RW_WLOCK(rw)   pthread_rwlock_wrlock(rw)
+  #define RW_UNLOCK(rw)  pthread_rwlock_unlock(rw)
 #else
-#define RW_RLOCK(rw)   pthread_mutex_lock(&(rw)->mutex)
-#define RW_WLOCK(rw)   pthread_mutex_lock(&(rw)->mutex)
-#define RW_UNLOCK(rw)  pthread_mutex_unlock(&(rw)->mutex);
+  static struct rwmutex rw;
+  #define RW_INIT(rw)    rwmutex_init(rw)
+  #define RW_RLOCK(rw)   rwmutex_rlock(rw)
+  #define RW_WLOCK(rw)   rwmutex_wlock(rw)
+  #define RW_UNLOCK(rw)  rwmutex_unlock(rw)
 #endif
-	
 
+// sleep from 0 to 5ms
+#define rw_delay()   usleep(random()%3000)
 
 #define NUM_READER   50
-#define NUM_WRITER   25
+#define NUM_WRITER   5
 
-#define val_orig 400000
+#define val_orig 4000
 static unsigned val = val_orig;
-static struct rwmutex rw;
 static pthread_t treaders[NUM_READER];
 static pthread_t twriters[NUM_WRITER];
 
@@ -264,7 +277,7 @@ thread_reader(void *arg)
 
 		reader_info[idx] ++;
 
-		//usleep(random()%10);
+		rw_delay();
 
 		if (val == 0) {
 			abort = 1;
@@ -289,6 +302,7 @@ thread_writer(void *arg)
 
 		writer_info[idx] ++;
 
+		rw_delay();
 		//usleep(random()%10);
 
 		if (!val)
@@ -310,7 +324,7 @@ thread_writer(void *arg)
 
 int
 main(void) {
-	int i, rc = rwmutex_init(&rw);
+	int i, rc = RW_INIT(&rw);
 	assert(rc == 0);
 
 	for(i =0; i< NUM_READER; i++) {
