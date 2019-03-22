@@ -30,8 +30,10 @@
   #define rwlog(...)  printf("[ %x ]", (int)pthread_self());	\
 	printf(__VA_ARGS__)
 #else
-  #define rwlog(...)  
+  #define rwlog(...)
 #endif
+
+#define RW_CONDS
 
 struct rwitem {
 	int type; // 0 : reader, 1: writer
@@ -45,8 +47,26 @@ struct rwmutex {
 	int time;
 	struct rwitem head;
 	pthread_mutex_t mutex;
+#ifdef RW_CONDS
+	pthread_cond_t rcond;
+	pthread_cond_t wcond;
+#else
 	pthread_cond_t cond;
+#endif
 };
+
+#ifdef RW_CONDS
+
+#define rw_rcond(rw)    (rw)->rcond
+#define rw_wcond(rw)    (rw)->wcond
+
+#else
+
+#define rw_rcond(rw)    (rw)->cond
+#define rw_wcond(rw)    (rw)->cond
+
+#endif
+
 
 struct rwitem *
 rwitem_alloc(struct rwmutex * rw, int type)
@@ -97,11 +117,19 @@ rwmutex_init(struct rwmutex * rw)
 	if (rc) {
 		return rc;
 	}
-	rc = pthread_cond_init(&rw->cond, NULL);
+
+	rc = pthread_cond_init(&rw_rcond(rw), NULL);
 	assert(rc == 0);
 	if (rc) {
 		return rc;
 	}
+#ifdef RW_CONDS
+	rc = pthread_cond_init(&rw_wcond(rw), NULL);
+	assert(rc == 0);
+	if (rc) {
+		return rc;
+	}
+#endif
 	rw->time = 0;
 	return 0;
 }
@@ -137,11 +165,12 @@ rwmutex_rlock(struct rwmutex * rw)
 	rw->time ++;
 
 	while(reader->prev != &rw->head) {
-		pthread_cond_wait(&rw->cond, &rw->mutex);
+		// wait for writer to wake up reader
+		pthread_cond_wait(&rw_rcond(rw), &rw->mutex);
 	}
 
 	assert((reader == rw->head.next) && (reader->prev == &rw->head));
-	
+
 	rwlog("rlock leav\n");
 
 	rc = pthread_mutex_unlock(&rw->mutex);
@@ -173,7 +202,8 @@ rwmutex_wlock(struct rwmutex * rw)
 	rw->time ++;
 
 	while(writer->prev != &rw->head) {
-		pthread_cond_wait(&rw->cond, &rw->mutex);
+		// wait for reader to wakeup writer
+		pthread_cond_wait(&rw_wcond(rw), &rw->mutex);
 	}
 
 	rwlog("wlock leav\n");
@@ -212,7 +242,13 @@ rwmutex_unlock(struct rwmutex * rw)
 				rwlog("\t unlock: wakeup next: %p \n", item->next);
 				rwitem_dump(item->next);
 				// wakeup next item
-				pthread_cond_broadcast(&rw->cond);
+				if (item->next->type == 0) {
+					// next is reader, so wakup reader.
+					pthread_cond_broadcast(&rw_rcond(rw));
+				} else {
+					// next is writer, so wakup writer
+					pthread_cond_broadcast(&rw_wcond(rw));
+				}
 			}
 			LIST_REMOVE(item);
 			rwitem_free(item);
