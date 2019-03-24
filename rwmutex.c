@@ -25,15 +25,23 @@
 	(cur)->prev->next = (cur)->next;	\
 	(cur)->next->prev = (cur)->prev
 
+//#define RW_CONDS
 
 #ifdef RW_DEBUG
-  #define rwlog(...)  printf("[ %x ]", (int)pthread_self());	\
+#define rwlog(...)								\
+	printf("[ %x ]", (int)pthread_self());		\
 	printf(__VA_ARGS__)
 #else
-  #define rwlog(...)
+#define rwlog(...)
 #endif
 
-#define RW_CONDS
+#define RW_READER  0
+
+#ifdef RW_CONDS
+#define RW_WRITER  1
+#else
+#define RW_WRITER  0
+#endif
 
 struct rwitem {
 	int type; // 0 : reader, 1: writer
@@ -47,26 +55,8 @@ struct rwmutex {
 	int time;
 	struct rwitem head;
 	pthread_mutex_t mutex;
-#ifdef RW_CONDS
-	pthread_cond_t rcond;
-	pthread_cond_t wcond;
-#else
-	pthread_cond_t cond;
-#endif
+	pthread_cond_t conds[2];
 };
-
-#ifdef RW_CONDS
-
-#define rw_rcond(rw)    (rw)->rcond
-#define rw_wcond(rw)    (rw)->wcond
-
-#else
-
-#define rw_rcond(rw)    (rw)->cond
-#define rw_wcond(rw)    (rw)->cond
-
-#endif
-
 
 struct rwitem *
 rwitem_alloc(struct rwmutex * rw, int type)
@@ -118,18 +108,16 @@ rwmutex_init(struct rwmutex * rw)
 		return rc;
 	}
 
-	rc = pthread_cond_init(&rw_rcond(rw), NULL);
+	rc = pthread_cond_init(&rw->conds[0], NULL);
 	assert(rc == 0);
 	if (rc) {
 		return rc;
 	}
-#ifdef RW_CONDS
-	rc = pthread_cond_init(&rw_wcond(rw), NULL);
+	rc = pthread_cond_init(&rw->conds[1], NULL);
 	assert(rc == 0);
 	if (rc) {
 		return rc;
 	}
-#endif
 	rw->time = 0;
 	return 0;
 }
@@ -166,13 +154,11 @@ rwmutex_rlock(struct rwmutex * rw)
 
 	while(reader->prev != &rw->head) {
 		// wait for writer to wake up reader
-		pthread_cond_wait(&rw_rcond(rw), &rw->mutex);
+		pthread_cond_wait(&rw->conds[RW_READER], &rw->mutex);
 	}
-
 	assert((reader == rw->head.next) && (reader->prev == &rw->head));
 
 	rwlog("rlock leav\n");
-
 	rc = pthread_mutex_unlock(&rw->mutex);
 	assert(rc == 0);
 
@@ -203,9 +189,8 @@ rwmutex_wlock(struct rwmutex * rw)
 
 	while(writer->prev != &rw->head) {
 		// wait for reader to wakeup writer
-		pthread_cond_wait(&rw_wcond(rw), &rw->mutex);
+		pthread_cond_wait(&rw->conds[RW_WRITER], &rw->mutex);
 	}
-
 	rwlog("wlock leav\n");
 
 	rc = pthread_mutex_unlock(&rw->mutex);
@@ -244,10 +229,10 @@ rwmutex_unlock(struct rwmutex * rw)
 				// wakeup next item
 				if (item->next->type == 0) {
 					// next is reader, so wakup reader.
-					pthread_cond_broadcast(&rw_rcond(rw));
+					pthread_cond_broadcast(&rw->conds[RW_READER]);
 				} else {
 					// next is writer, so wakup writer
-					pthread_cond_broadcast(&rw_wcond(rw));
+					pthread_cond_broadcast(&rw->conds[RW_WRITER]);
 				}
 			}
 			LIST_REMOVE(item);
