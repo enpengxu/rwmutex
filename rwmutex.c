@@ -5,7 +5,7 @@
 #include <unistd.h>
 #include <stdint.h>
 
-#define LIST_INIT(head)				\
+#define LIST_INIT(head)			\
 	(head)->next = (head);			\
 	(head)->prev = (head)
 
@@ -26,10 +26,11 @@
 	(cur)->next->prev = (cur)->prev
 
 //#define RW_CONDS
-//#define RW_DEBUG
+#define RW_DEBUG
+
 #ifdef RW_DEBUG
-#define rwlog(...)					\
-	printf("[ %x ]", (int)pthread_self());		\
+#define rwlog(...)				\
+	printf("[ %x ]", (int)pthread_self());	\
 	printf(__VA_ARGS__)
 #else
 #define rwlog(...)
@@ -138,9 +139,10 @@ rwmutex_rlock(struct rwmutex * rw)
 
 	rwlog("rlock enter:\n");
 
-	if (tail == &rw->head && rw->head.type == 0 && rw->head.num > 0) {
-		// only readers running, insert it
+	if (tail == &rw->head && rw->head.type != 1) {
+		// it's safe to run reader now, passthrough it.
 		reader = NULL;
+		rw->head.type = 0;
 		rw->head.num ++;
 	} else if (tail != &rw->head && tail->type == 0) {
 		// merge into the reader block
@@ -169,6 +171,7 @@ rwmutex_rlock(struct rwmutex * rw)
 			pthread_cond_wait(&rw->conds[RW_READER], &rw->mutex);
 		}
 		rw->head.num ++;
+		rw->head.type = 0;
 		if(reader == &item) {
 			// now remove reader ptr and move info to head.
 			LIST_REMOVE(reader);
@@ -199,31 +202,36 @@ rwmutex_wlock(struct rwmutex * rw)
 
 	rwlog("wlock enter:\n");
 
-	struct rwitem * writer, * prev;
+	struct rwitem * writer = NULL, * prev;
 
-	// create a new writer block & insert to tail
-	//writer = rwitem_alloc(rw, 1);
-	//assert(writer);
-	writer = &item;
-	LIST_APPEND(&rw->head, writer);
+	prev = rw->head.prev;
 
+	if (prev != &rw->head) {
+		// create a new writer block & insert to tail
+		//writer = rwitem_alloc(rw, 1);
+		//assert(writer);
+		writer = &item;
+		LIST_APPEND(&rw->head, writer);
+		writer->seq = rw->seq;
+	}
+
+	rw->seq ++;
 	rwlog("\t wlock insert writer: %p\n", writer);
-	writer->seq = rw->seq ++;
 
-	while(writer->seq != rw->head.seq) {
-		// wait for reader to wakeup writer
-		pthread_cond_wait(&rw->conds[RW_WRITER], &rw->mutex);
+	if (writer) {
+		while(writer->seq != rw->head.seq) {
+			// wait for reader to wakeup writer
+			pthread_cond_wait(&rw->conds[RW_WRITER], &rw->mutex);
+		}
+		assert(writer == rw->head.next);
+		LIST_REMOVE(writer);
 	}
 	rwlog("wlock leav\n");
 
 	// now remove writer ptr & move info to head
-	assert(writer == rw->head.next);
-	LIST_REMOVE(writer);
+	rw->head.num = 1;
+	rw->head.type= 1;
 
-	rw->head.num = 1; //writer->num;
-	rw->head.type= writer->type;
-
-	assert(rw->head.num == 1);
 	rc = pthread_mutex_unlock(&rw->mutex);
 	assert(rc == 0);
 
@@ -248,20 +256,34 @@ rwmutex_unlock(struct rwmutex * rw)
 	assert(head->type == 0 || head->type == 1);
 	assert(head->num > 0);
 
+	if (head->type == 1) {
+		assert(head->num == 1);
+	}
+
 	if (!--head->num) {
-		if (head->next != head) {
+		struct rwitem * next = head->next;
+		if (next != head) {
+			// wakeup next
+			assert(next->num > 0);
+			assert(next->type == 0 || next->type == 1);
+
 			rwlog("\t unlock: wakeup next: %p \n", head->next);
-			rwitem_dump(head->next);
-			// wakeup next item
-			head->seq = head->next->seq;
-			head->num = 0;
-			if (head->next->type == 0) {
+			rwitem_dump(next);
+
+			head->type = next->type;
+			head->seq  = next->seq;
+			head->num  = 0;
+			if (next->type == 0) {
 				// next is reader, so wakup reader.
 				pthread_cond_broadcast(&rw->conds[RW_READER]);
 			} else {
 				// next is writer, so wakup writer
 				pthread_cond_broadcast(&rw->conds[RW_WRITER]);
 			}
+		} else {
+			head->type = 0;
+			head->seq  = 0;
+			head->num  = 0;
 		}
 	}
 	rwlog("unlock leave\n");
@@ -298,12 +320,12 @@ rwmutex_unlock(struct rwmutex * rw)
 #endif
 
 // sleep from 0 to 5ms
-#define rw_delay()   usleep(random()%3000)
+#define rw_delay()   usleep(random()%200)
 
-#define NUM_READER  50 
+#define NUM_READER  50
 #define NUM_WRITER  5
 
-#define val_orig    4000
+#define val_orig    40000
 static unsigned val = val_orig;
 static pthread_t treaders[NUM_READER];
 static pthread_t twriters[NUM_WRITER];
@@ -342,7 +364,7 @@ thread_writer(void *arg)
 	static int count = 0;
 	int abort = 0;
 	int idx = (int)(uintptr_t)arg;
-	
+
 	while(!abort) {
 		int rc = RW_WLOCK(&rw);
 		assert(rc == 0);
