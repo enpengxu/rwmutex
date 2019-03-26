@@ -5,7 +5,7 @@
 #include <unistd.h>
 #include <stdint.h>
 
-#define RW_CONDS
+//#define RW_CONDS
 //#define RW_DEBUG
 
 #ifdef RW_DEBUG
@@ -85,7 +85,6 @@ rwmutex_dump(struct rwmutex* rw)
 	}
 	rwlog("\t}\n");
 }
-
 
 int
 rwmutex_init(struct rwmutex * rw)
@@ -223,7 +222,6 @@ rwmutex_wlock(struct rwmutex * rw)
 	assert(rc == 0);
 
 	return rc;
-
 }
 
 int
@@ -310,13 +308,13 @@ rwmutex_unlock(struct rwmutex * rw)
   #define RW_UNLOCK(rw)  rwmutex_unlock(rw)
 #endif
 
-// sleep from 0 to 5ms
+// sleep from 0 to 200us
 #define rw_delay()   usleep(random()%200)
 
 #define NUM_READER  150
 #define NUM_WRITER  15
 
-#define val_orig    400000
+#define val_orig    50000
 static unsigned val = val_orig;
 static pthread_t treaders[NUM_READER];
 static pthread_t twriters[NUM_WRITER];
@@ -371,7 +369,7 @@ thread_writer(void *arg)
 			val --;
 		}
 		if (++count == 500) {
-			fprintf(stderr, "val = %d / %d \n", val, val_orig);
+			//fprintf(stderr, "val = %d / %d \n", val, val_orig);
 			count = 0;
 		}
 
